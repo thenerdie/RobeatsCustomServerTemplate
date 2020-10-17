@@ -1,74 +1,77 @@
 local DataStoreService = game:GetService("DataStoreService")
 local ScoreDatabase = DataStoreService:GetDataStore("ScoreDatabase")
-
 local HttpService = game:GetService("HttpService")
-
-local scoreTemplate = require(game.ReplicatedStorage.Templates.Gameplay.ScoreTemplate)
-
 local Networking = require(game.ReplicatedStorage.Networking)
+local AssertType = require(game.ReplicatedStorage.Shared.AssertType)
+local SongDatabase = require(game.ReplicatedStorage.RobeatsGameCore.SongDatabase)
+local CustomServerSettings = require(game.Workspace.CustomServerSettings)
 
-function submitScore(player, sentData)
-    local playerID = player.UserId
-
-    sentData.userid = playerID
-    sentData.playername = player.Name
-
-    local data = scoreTemplate:new(sentData)
-
-    local submitScore = false
-
-    local name = "map_"..data.mapid
-    -- GET THE OLD LEADERBOARD
-    local suc, err = pcall(function()
-        ScoreDatabase:UpdateAsync(name, function(leaderboard)
-            leaderboard = leaderboard or {}
-
-            local oldScore = nil
-
-            for i, v in pairs(leaderboard) do
-                if v.userid == playerID then
-                    oldScore = v
-                end
-            end
-
-            oldScore = oldScore or data
-
-            if (oldScore.accuracy <= data.accuracy) then
-                submitScore = true
-            end
-
-            if submitScore then
-                for i, v in pairs(leaderboard) do
-                    if v.userid == playerID then
-                        leaderboard[i] = nil
-                    end
-                end
-                leaderboard[#leaderboard+1] = data
-            end
-
-            return leaderboard
-        end)
-    end)
-
-    if not suc then
-        warn(err)
-    end
+local function getLeaderboardKey(mapid)
+	return string.format("leaderboard_songkey(%s)", tostring(mapid))
 end
 
-function getLeaderboard(player, request)
-    local name = "map_"..request.mapid
+Networking.Server:Register("SubmitScore", function(player, sentData)
+		AssertType:is_true(SongDatabase:contains_key(sentData.mapid))
+		AssertType:is_number(sentData.accuracy)
+		AssertType:is_int(sentData.maxcombo)
+		AssertType:is_int(sentData.perfects)
+		AssertType:is_int(sentData.greats)
+		AssertType:is_int(sentData.okays)
+		AssertType:is_int(sentData.misses)
+		
+		local playerID = player.UserId
 
-    local lb = {}
-    local suc, err = pcall(function()
-        lb = ScoreDatabase:GetAsync(name)
-    end)
+		sentData.userid = playerID
+		sentData.playername = player.Name
+		sentData.time = os.time()
+		
+		local name = getLeaderboardKey(sentData.mapid)
+		local suc, err = pcall(function()
+				ScoreDatabase:UpdateAsync(name, function(leaderboard)
+						leaderboard = leaderboard or {}
+						
+						--Sort by time: most new first, oldest last
+						table.sort(leaderboard, function(a,b)
+							return a.time > b.time
+						end)
+						
+						--Insert play as newsest
+						table.insert(leaderboard, 1, sentData)
+						
+						--Remove oldest play
+						if #leaderboard > CustomServerSettings.LeaderboardSettings.TrackedPlayCount then
+							table.remove(leaderboard, #leaderboard)
+						end
+						
+						--If displaying leaderboard by accuracy, sort it by accuracy before saving
+						if CustomServerSettings.LeaderboardSettings.SortByAccuracy then
+							table.sort(leaderboard, function(a,b)
+								return a.accuracy > b.accuracy
+							end)
+						end
+						
+						return leaderboard
+				end)
+		end)
 
-    if not suc then
-        warn(err)
-    end
+		if not suc then
+				warn(err)
+		end
+end)
 
-    return lb
-end
+Networking.Server:Register("GetLeaderboard", function(player, request)
+		AssertType:is_true(SongDatabase:contains_key(request.mapid))
+		
+		local name = getLeaderboardKey(request.mapid)
 
-Networking.Server:Register("SubmitScore", submitScore)
-Networking.Server:Register("GetLeaderboard", getLeaderboard)
+		local lb = {}
+		local suc, err = pcall(function()
+				lb = ScoreDatabase:GetAsync(name)
+		end)
+
+		if not suc then
+				warn(err)
+		end
+
+		return lb
+end)
